@@ -1,0 +1,178 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String                @id @default(cuid())
+  name             String
+  email            String                @unique
+  native_language  String
+  target_goal      String
+  password_hash    String
+  current_cefr_level String?
+  app_level        String
+  total_xp         Int                   @default(0)
+  role             String                @default("learner")
+  status           String                @default("active")
+  failed_login_count Int                 @default(0)
+  locked_until     DateTime?
+  last_login_at    DateTime?
+  created_at       DateTime              @default(now())
+  updated_at       DateTime              @updatedAt
+  authSessions     AuthSession[]
+  accessLogs       AccessLog[]
+  sessions         ConversationSession[]
+  learningPlans    LearningPlan[]
+  expressionCards  ExpressionCard[]
+  dailyMissions    DailyMission[]
+  streak           Streak?
+  weeklyScores     WeeklyScore[]
+  badges           AchievementBadge[]
+}
+
+model AuthSession {
+  id          String    @id @default(cuid())
+  user_id     String
+  token_hash  String    @unique
+  ip_address  String?
+  user_agent  String?
+  created_at  DateTime  @default(now())
+  expires_at  DateTime
+  revoked_at  DateTime?
+  user        User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+model AccessLog {
+  id         String   @id @default(cuid())
+  user_id    String?
+  email      String?
+  event      String
+  ip_address String?
+  user_agent String?
+  created_at DateTime @default(now())
+  user       User?    @relation(fields: [user_id], references: [id], onDelete: SetNull)
+}
+
+model ConversationSession {
+  id               String               @id @default(cuid())
+  user_id          String
+  mode             String
+  scenario         String
+  started_at       DateTime
+  ended_at         DateTime?
+  transcript       String
+  audio_url        String?
+  duration_seconds Int
+  created_at       DateTime             @default(now())
+  user             User                 @relation(fields: [user_id], references: [id])
+  assessment       SpeakingAssessment?
+}
+
+model SpeakingAssessment {
+  id                            String              @id @default(cuid())
+  session_id                    String              @unique
+  estimated_cefr_level          String
+  overall_score                 Int
+  fluency_score                 Int
+  grammar_score                 Int
+  vocabulary_score              Int
+  pronunciation_clarity_score   Int
+  interaction_score             Int
+  business_english_score        Int
+  strengths_json                String
+  weaknesses_json               String
+  frequent_errors_json          String
+  corrected_sentences_json      String
+  better_expressions_json       String
+  recommended_learning_path_json String
+  created_at                    DateTime            @default(now())
+  session                       ConversationSession @relation(fields: [session_id], references: [id])
+}
+
+model LearningPlan {
+  id          String   @id @default(cuid())
+  user_id     String
+  level       String
+  goal        String
+  plan_json   String
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+  user        User     @relation(fields: [user_id], references: [id])
+}
+
+model ExpressionCard {
+  id                 String   @id @default(cuid())
+  user_id            String
+  original_sentence  String
+  corrected_sentence String
+  better_expression  String
+  category           String
+  scenario           String
+  is_reviewed        Boolean  @default(false)
+  review_count       Int      @default(0)
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+  user               User     @relation(fields: [user_id], references: [id])
+}
+
+model DailyMission {
+  id                       String    @id @default(cuid())
+  user_id                  String
+  date                     DateTime
+  mission_type             String
+  scenario                 String
+  goal                     String
+  target_expressions_json  String
+  estimated_time_minutes   Int
+  minimum_speaking_seconds Int
+  minimum_score            Int
+  is_completed             Boolean   @default(false)
+  completed_at             DateTime?
+  score                    Int?
+  xp_earned                Int?
+  created_at               DateTime  @default(now())
+  user                     User      @relation(fields: [user_id], references: [id])
+}
+
+model Streak {
+  id                  String   @id @default(cuid())
+  user_id             String   @unique
+  current_streak      Int      @default(0)
+  best_streak         Int      @default(0)
+  last_completed_date DateTime?
+  streak_freeze_count Int      @default(0)
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+  user                User     @relation(fields: [user_id], references: [id])
+}
+
+model WeeklyScore {
+  id                          String   @id @default(cuid())
+  user_id                     String
+  week_start_date             DateTime
+  week_end_date               DateTime
+  total_score                 Int      @default(0)
+  total_xp                    Int      @default(0)
+  completed_missions          Int      @default(0)
+  average_speaking_score      Int      @default(0)
+  business_missions_completed Int      @default(0)
+  daily_missions_completed    Int      @default(0)
+  weekly_bonus_score          Int      @default(0)
+  created_at                  DateTime @default(now())
+  user                        User     @relation(fields: [user_id], references: [id])
+}
+
+model AchievementBadge {
+  id          String   @id @default(cuid())
+  user_id     String
+  badge_code  String
+  badge_name  String
+  description String
+  earned_at   DateTime @default(now())
+  user        User     @relation(fields: [user_id], references: [id])
+}
