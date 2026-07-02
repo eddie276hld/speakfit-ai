@@ -20,6 +20,10 @@ const state = {
   startedAt: null,
   timerSeconds: 180,
   timerId: null,
+  responseTimer: null,
+  pendingUserAnswer: "",
+  responseDelayMs: 3200,
+  isThinking: false,
   userWordCount: 0,
   toast: ""
 };
@@ -389,7 +393,7 @@ function renderPractice() {
 function renderConversation(showAssessmentAction = true) {
   const selected = getSelectedScenario();
   const progress = Math.max(0, Math.min(100, Math.round((1 - state.timerSeconds / 180) * 100)));
-  const status = state.isListening ? "사용자 말하는 중" : state.isSpeaking ? "AI 말하는 중" : "대기 중";
+  const status = getConversationStatus();
   const endAction = showAssessmentAction ? "end-test" : "end-practice";
   const endLabel = showAssessmentAction ? "테스트 종료" : "연습 종료";
 
@@ -403,7 +407,7 @@ function renderConversation(showAssessmentAction = true) {
           <div class="meter-line">
             <span id="timerText">${formatTimer(state.timerSeconds)}</span>
             <div class="bar" aria-hidden="true"><span style="--value:${progress}%"></span></div>
-            <span>${status}</span>
+            <span id="conversationStatus">${status}</span>
           </div>
         </div>
       </div>
@@ -730,6 +734,7 @@ function beginSession(type, scenarioId, goToSessionView) {
   state.startedAt = new Date().toISOString();
   state.timerSeconds = type === "level_test" ? 180 : 300;
   state.userWordCount = 0;
+  clearPendingResponse();
   render();
 
   const scenario = getSelectedScenario();
@@ -778,6 +783,7 @@ function startRecognition() {
 
   recognition.onresult = (event) => {
     let interim = "";
+    const finalTexts = [];
     for (let index = event.resultIndex; index < event.results.length; index += 1) {
       const result = event.results[index];
       const text = result[0].transcript.trim();
@@ -785,12 +791,26 @@ function startRecognition() {
         state.interimText = "";
         addTurn("user", text);
         state.userWordCount += text.split(/\s+/).filter(Boolean).length;
-        respondToUser(text);
+        finalTexts.push(text);
       } else {
         interim += ` ${text}`;
       }
     }
     state.interimText = interim.trim();
+
+    if (finalTexts.length) {
+      state.pendingUserAnswer = [state.pendingUserAnswer, finalTexts.join(" ")]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+    }
+
+    if (state.interimText) {
+      clearPendingResponse({ keepText: true });
+    } else if (finalTexts.length) {
+      scheduleResponseAfterPause();
+    }
+
     updateTranscript();
   };
 
@@ -821,6 +841,7 @@ function stopRecognition() {
 
 async function endSession(createReport) {
   stopRecognition();
+  clearPendingResponse();
   clearInterval(state.timerId);
   state.sessionActive = false;
 
@@ -851,15 +872,106 @@ async function endSession(createReport) {
   render();
 }
 
+function scheduleResponseAfterPause() {
+  window.clearTimeout(state.responseTimer);
+  const delay = getResponseDelay(state.pendingUserAnswer);
+  state.responseDelayMs = delay;
+  state.isThinking = true;
+  updateConversationStatus();
+
+  state.responseTimer = window.setTimeout(() => {
+    const userText = state.pendingUserAnswer.trim();
+    state.pendingUserAnswer = "";
+    state.responseTimer = null;
+    state.isThinking = false;
+    updateConversationStatus();
+
+    if (!state.sessionActive || !userText) return;
+    respondToUser(userText);
+  }, delay);
+}
+
+function clearPendingResponse(options = {}) {
+  window.clearTimeout(state.responseTimer);
+  state.responseTimer = null;
+  if (!options.keepText) {
+    state.pendingUserAnswer = "";
+  }
+  state.isThinking = false;
+  updateConversationStatus();
+}
+
+function getResponseDelay(text) {
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  return Math.max(2800, Math.min(5600, 2400 + wordCount * 95));
+}
+
 function respondToUser(userText) {
   const scenario = getSelectedScenario();
   const turns = state.transcript.filter((turn) => turn.speaker === "user").length;
+  const reply = buildContextualReply(userText, scenario, turns);
+  addTurn("ai", reply);
+  speak(reply);
+}
+
+function buildContextualReply(userText, scenario, turns) {
+  const normalized = userText.toLowerCase();
+  const phrase = getAnswerReference(userText);
+  const isBusiness = scenario.category === "Business English";
+  const isShort = userText.split(/\s+/).filter(Boolean).length < 9;
+
+  if (isShort) {
+    return `I got your point about ${phrase}. Could you add one reason or one specific example?`;
+  }
+
+  if (isBusiness) {
+    if (includesAny(normalized, ["cash flow", "working capital", "liquidity"])) {
+      return `You mentioned ${phrase}, which is important for SMEs. Can you give me one concrete example of when a company would need that support?`;
+    }
+
+    if (includesAny(normalized, ["bnpl", "pay later", "payment terms", "repayment"])) {
+      return `Good. Since you talked about payment terms, how would you explain the repayment period to a foreign buyer in a simple way?`;
+    }
+
+    if (includesAny(normalized, ["risk", "credit", "default", "assessment", "scoring"])) {
+      return `That connects well to risk management. How do you assess whether a buyer or SME is safe to support?`;
+    }
+
+    if (includesAny(normalized, ["revenue", "fee", "traction", "investor", "growth"])) {
+      return `You brought up ${phrase}. If an investor asked why the numbers look promising, what would you say next?`;
+    }
+
+    return `That makes sense. Building on your answer about ${phrase}, what problem does this solve for small and medium-sized businesses?`;
+  }
+
+  if (includesAny(normalized, ["breakfast", "late checkout", "reservation", "room", "hotel"])) {
+    return `Nice. You handled the hotel situation. Now could you ask one polite follow-up question about the room or checkout time?`;
+  }
+
+  if (includesAny(normalized, ["kid", "child", "family", "table", "menu", "restaurant"])) {
+    return `Good family-travel answer. If the staff says there is a wait, how would you respond politely?`;
+  }
+
+  if (includesAny(normalized, ["pharmacy", "fever", "doctor", "hospital", "sick"])) {
+    return `You explained the health situation clearly. What would you ask next to find the nearest pharmacy or clinic?`;
+  }
+
   const followUps = aiFollowUps[scenario.id] || aiFollowUps.conference_booth;
-  const reply = followUps[(turns - 1) % followUps.length];
-  window.setTimeout(() => {
-    addTurn("ai", reply);
-    speak(reply);
-  }, 420);
+  const fallback = followUps[(turns - 1) % followUps.length];
+  return `I heard your answer about ${phrase}. ${fallback}`;
+}
+
+function getAnswerReference(userText) {
+  const words = userText
+    .replace(/[^\w\s'-]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 2)
+    .slice(0, 7);
+  return words.length ? `"${words.join(" ")}"` : "that idea";
+}
+
+function includesAny(text, terms) {
+  return terms.some((term) => text.includes(term));
 }
 
 function giveHint() {
@@ -887,7 +999,8 @@ function addDemoAnswer() {
     : "We'd like to check in, please. Is breakfast included, and could we get a room with two beds?";
   addTurn("user", sample);
   state.userWordCount += sample.split(/\s+/).length;
-  respondToUser(sample);
+  state.pendingUserAnswer = [state.pendingUserAnswer, sample].filter(Boolean).join(" ").trim();
+  scheduleResponseAfterPause();
 }
 
 async function completeMission() {
@@ -935,11 +1048,11 @@ function speak(text) {
   utterance.pitch = 1.02;
   utterance.onstart = () => {
     state.isSpeaking = true;
-    updateTimerDisplay();
+    updateConversationStatus();
   };
   utterance.onend = () => {
     state.isSpeaking = false;
-    updateTimerDisplay();
+    updateConversationStatus();
   };
   window.speechSynthesis.speak(utterance);
 }
@@ -962,6 +1075,18 @@ function getSessionDuration() {
 function updateTimerDisplay() {
   const timer = document.querySelector("#timerText");
   if (timer) timer.textContent = formatTimer(state.timerSeconds);
+}
+
+function getConversationStatus() {
+  if (state.isSpeaking) return "AI 말하는 중";
+  if (state.isThinking) return "답변 완료 판단 중";
+  if (state.isListening) return "사용자 답변 듣는 중";
+  return "대기 중";
+}
+
+function updateConversationStatus() {
+  const status = document.querySelector("#conversationStatus");
+  if (status) status.textContent = getConversationStatus();
 }
 
 function formatTimer(seconds) {
